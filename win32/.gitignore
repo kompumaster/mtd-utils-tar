@@ -1,0 +1,5 @@
+obj/
+obj-linux/
+third_party/*/
+*.exe
+mkfs.ubifs_tar
