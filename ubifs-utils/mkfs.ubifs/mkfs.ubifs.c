@@ -56,6 +56,7 @@
 #include "compr.h"
 #include "misc.h"
 #include "devtable.h"
+#include "tar_index.h"
 
 /* Size (prime number) of hash table for link counting */
 #define HASH_TABLE_SIZE 10099
@@ -143,6 +144,15 @@ int yes;
 
 static char *root;
 static int root_len;
+/* --tar mode: take the tree from an archive instead of a file system. */
+static int tar_mode;
+static const char *tar_path;
+#define TAR_SKIP_MAX 64
+static const char *tar_skip[TAR_SKIP_MAX];
+static int tar_skip_count;
+static struct tar_index *tar_ix;
+#define TAR_OPTION 0x100
+#define TAR_SKIP_OPTION 0x101
 static struct fscrypt_context *root_fctx;
 static struct stat root_st;
 static int squash_owner;
@@ -211,6 +221,8 @@ static const struct option longopts[] = {
 	{"hash-algo",          1, NULL, HASH_ALGO_OPTION},
 	{"auth-key",           1, NULL, AUTH_KEY_OPTION},
 	{"auth-cert",          1, NULL, AUTH_CERT_OPTION},
+	{"tar",               1, NULL, TAR_OPTION},
+	{"tar-skip",          1, NULL, TAR_SKIP_OPTION},
 	{NULL, 0, NULL, 0}
 };
 
@@ -230,6 +242,8 @@ static const char *helptext =
 "-e, --leb-size=SIZE      logical erase block size\n"
 "-c, --max-leb-cnt=COUNT  maximum logical erase block count\n"
 "-o, --output=FILE        output to FILE\n"
+"--tar=FILE               build from a tar archive\n"
+"--tar-skip=PATH          skip PATH and its children in tar mode (repeatable)\n"
 "-j, --jrn-size=SIZE      journal size\n"
 "-R, --reserved=SIZE      how much space should be reserved for the super-user\n"
 "-x, --compr=TYPE         compression type - \"lzo\", \"favor_lzo\", \"zlib\"\n"
@@ -401,7 +415,7 @@ static int validate_options(void)
 
 	if (!c->dev_name)
 		return errmsg("no output file or UBI volume specified");
-	if (root) {
+	if (root && !tar_mode) {
 		tmp = is_contained(c->dev_name, root);
 		if (tmp < 0)
 			return errmsg("failed to perform output file root check");
@@ -580,6 +594,15 @@ static int get_options(int argc, char**argv)
 			if (stat(root, &st))
 				return sys_errmsg("bad root directory '%s'",
 						   root);
+			break;
+		case TAR_OPTION:
+			tar_path = optarg;
+			tar_mode = 1;
+			break;
+		case TAR_SKIP_OPTION:
+			if (tar_skip_count >= TAR_SKIP_MAX)
+				return errmsg("too many --tar-skip options");
+			tar_skip[tar_skip_count++] = optarg;
 			break;
 		case 'm':
 			c->min_io_size = get_bytes(optarg);
@@ -789,6 +812,18 @@ static int get_options(int argc, char**argv)
 			return errmsg("mkfs.ubifs was built without crypto support.");
 #endif
 		}
+	}
+
+	if (tar_skip_count && !tar_mode)
+		return errmsg("--tar-skip requires --tar");
+	if (tar_mode) {
+		tar_ix = tar_open(tar_path, tar_skip, tar_skip_count);
+		if (!tar_ix)
+			return errmsg("cannot read tar '%s'", tar_path);
+		free(root);
+		root_len = 1;
+		root = xmalloc(2);
+		strcpy(root, "/");
 	}
 
 	if (optind != argc && !c->dev_name)
@@ -1591,9 +1626,15 @@ static int add_symlink_inode(const char *path_name, struct stat *st, ino_t inum,
 	ssize_t len;
 
 	/* Take the symlink as is */
-	len = readlink(path_name, buf, UBIFS_MAX_INO_DATA + 1);
-	if (len <= 0)
-		return sys_errmsg("readlink failed for %s", path_name);
+	if (tar_mode) {
+		len = tar_target(tar_ix, path_name, buf, UBIFS_MAX_INO_DATA + 1);
+		if (len < 0)
+			return errmsg("tar: no symlink target for %s", path_name);
+	} else {
+		len = readlink(path_name, buf, UBIFS_MAX_INO_DATA + 1);
+		if (len <= 0)
+			return sys_errmsg("readlink failed for %s", path_name);
+	}
 	if (len > UBIFS_MAX_INO_DATA)
 		return errmsg("symlink too long for %s", path_name);
 
@@ -1741,20 +1782,36 @@ static int add_file(const char *path_name, struct stat *st, ino_t inum,
 	unsigned int block_no = 0;
 	size_t out_len;
 
-	fd = open(path_name, O_RDONLY | O_LARGEFILE);
-	if (fd == -1)
-		return sys_errmsg("failed to open file '%s'", path_name);
+	if (tar_mode) {
+		fd = -1;
+	} else {
+		fd = open(path_name, O_RDONLY | O_LARGEFILE);
+		if (fd == -1)
+			return sys_errmsg("failed to open file '%s'", path_name);
+	}
 	do {
 		/* Read next block */
 		bytes_read = 0;
 		do {
-			ret = read(fd, buf + bytes_read,
-				   UBIFS_BLOCK_SIZE - bytes_read);
-			if (ret == -1) {
-				sys_errmsg("failed to read file '%s'",
-					    path_name);
-				close(fd);
-				return 1;
+			if (tar_mode) {
+				ret = tar_read(tar_ix, path_name,
+					       buf + bytes_read,
+					       UBIFS_BLOCK_SIZE - bytes_read,
+					       file_size + bytes_read);
+				if (ret < 0) {
+					sys_errmsg("tar read failed for '%s'",
+						   path_name);
+					return 1;
+				}
+			} else {
+				ret = read(fd, buf + bytes_read,
+					   UBIFS_BLOCK_SIZE - bytes_read);
+				if (ret == -1) {
+					sys_errmsg("failed to read file '%s'",
+						    path_name);
+					close(fd);
+					return 1;
+				}
 			}
 			bytes_read += ret;
 		} while (ret != 0 && bytes_read != UBIFS_BLOCK_SIZE);
@@ -1810,7 +1867,7 @@ static int add_file(const char *path_name, struct stat *st, ino_t inum,
 		block_no++;
 	} while (ret != 0);
 
-	if (close(fd) == -1)
+	if (!tar_mode && close(fd) == -1)
 		return sys_errmsg("failed to close file '%s'", path_name);
 	if (file_size != st->st_size)
 		return errmsg("file size changed during writing file '%s'",
@@ -1837,15 +1894,17 @@ static int add_non_dir(const char *path_name, ino_t *inum, unsigned int nlink,
 	pr_debug("%s\n", path_name);
 
 	if (S_ISREG(st->st_mode)) {
-		fd = open(path_name, O_RDONLY);
-		if (fd == -1)
-			return sys_errmsg("failed to open file '%s'",
-					   path_name);
-		if (ioctl(fd, FS_IOC_GETFLAGS, &flags) == -1)
-			flags = 0;
-		if (close(fd) == -1)
-			return sys_errmsg("failed to close file '%s'",
-					   path_name);
+		if (!tar_mode) {
+			fd = open(path_name, O_RDONLY);
+			if (fd == -1)
+				return sys_errmsg("failed to open file '%s'",
+						   path_name);
+			if (ioctl(fd, FS_IOC_GETFLAGS, &flags) == -1)
+				flags = 0;
+			if (close(fd) == -1)
+				return sys_errmsg("failed to close file '%s'",
+						   path_name);
+		}
 		*type = UBIFS_ITYPE_REG;
 	} else if (S_ISCHR(st->st_mode))
 		*type = UBIFS_ITYPE_CHR;
@@ -1923,6 +1982,8 @@ static int add_directory(const char *dir_name, ino_t dir_inum, struct stat *st,
 			 int existing, struct fscrypt_context *fctx)
 {
 	struct dirent *entry;
+	const char *cname = NULL;
+	struct tar_dir tar_it;
 	DIR *dir = NULL;
 	int kname_len, err = 0;
 	loff_t size = UBIFS_INO_NODE_SZ;
@@ -1936,7 +1997,9 @@ static int add_directory(const char *dir_name, ino_t dir_inum, struct stat *st,
 	unsigned long long dir_creat_sqnum = ++c->max_sqnum;
 
 	pr_debug("%s\n", dir_name);
-	if (existing) {
+	if (tar_mode)
+		tar_dir_begin(tar_ix, dir_name, &tar_it);
+	if (existing && !tar_mode) {
 		dir = opendir(dir_name);
 		if (dir == NULL)
 			return sys_errmsg("cannot open directory '%s'",
@@ -1948,7 +2011,7 @@ static int add_directory(const char *dir_name, ino_t dir_inum, struct stat *st,
 	 * added/changed because they were specified in the device table.
 	 * @ph_elt will be non-zero if yes.
 	 */
-	ph_elt = devtbl_find_path(dir_name + root_len - 1);
+	ph_elt = tar_mode ? NULL : devtbl_find_path(dir_name + root_len - 1);
 
 	/*
 	 * Before adding the directory itself, we have to iterate over all the
@@ -1958,19 +2021,26 @@ static int add_directory(const char *dir_name, ino_t dir_inum, struct stat *st,
 		struct stat dent_st;
 		struct fscrypt_context *new_fctx = NULL;
 
-		errno = 0;
-		entry = readdir(dir);
-		if (!entry) {
-			if (errno == 0)
+		if (tar_mode) {
+			cname = tar_dir_next(tar_ix, &tar_it);
+			if (!cname)
 				break;
-			sys_errmsg("error reading directory '%s'", dir_name);
-			goto out_free;
+		} else {
+			errno = 0;
+			entry = readdir(dir);
+			if (!entry) {
+				if (errno == 0)
+					break;
+				sys_errmsg("error reading directory '%s'",
+					   dir_name);
+				goto out_free;
+			}
+			if (strcmp(".", entry->d_name) == 0)
+				continue;
+			if (strcmp("..", entry->d_name) == 0)
+				continue;
+			cname = entry->d_name;
 		}
-
-		if (strcmp(".", entry->d_name) == 0)
-			continue;
-		if (strcmp("..", entry->d_name) == 0)
-			continue;
 
 		if (ph_elt)
 			/*
@@ -1978,7 +2048,7 @@ static int add_directory(const char *dir_name, ino_t dir_inum, struct stat *st,
 			 * file. Check if this directory entry is referred at
 			 * too.
 			 */
-			nh_elt = devtbl_find_name(ph_elt, entry->d_name);
+			nh_elt = devtbl_find_name(ph_elt, cname);
 
 		/*
 		 * We are going to create the file corresponding to this
@@ -1988,8 +2058,13 @@ static int add_directory(const char *dir_name, ino_t dir_inum, struct stat *st,
 		 * for this file from the UBIFS rootfs on the host.
 		 */
 		free(name);
-		name = make_path(dir_name, entry->d_name);
-		if (lstat(name, &dent_st) == -1) {
+		name = make_path(dir_name, cname);
+		if (tar_mode) {
+			if (tar_fill_stat(tar_ix, name, &dent_st)) {
+				errmsg("tar: no entry for '%s'", name);
+				goto out_free;
+			}
+		} else if (lstat(name, &dent_st) == -1) {
 			sys_errmsg("lstat failed for file '%s'", name);
 			goto out_free;
 		}
@@ -2037,7 +2112,7 @@ static int add_directory(const char *dir_name, ino_t dir_inum, struct stat *st,
 			goto out_free;
 		}
 
-		err = add_dent_node(dir_inum, entry->d_name, inum, type, fctx,
+		err = add_dent_node(dir_inum, cname, inum, type, fctx,
 				    &kname_len);
 		if (err) {
 			free_fscrypt_context(new_fctx);
@@ -2048,6 +2123,9 @@ static int add_directory(const char *dir_name, ino_t dir_inum, struct stat *st,
 		if (new_fctx)
 			free_fscrypt_context(new_fctx);
 	}
+
+	if (tar_mode)
+		tar_dir_end(&tar_it);
 
 	/*
 	 * OK, we have created all files in this directory (recursively), let's
@@ -2130,7 +2208,7 @@ static int add_directory(const char *dir_name, ino_t dir_inum, struct stat *st,
 		goto out_free;
 
 	free(name);
-	if (existing && closedir(dir) == -1)
+	if (existing && !tar_mode && closedir(dir) == -1)
 		return sys_errmsg("error closing directory '%s'", dir_name);
 
 	return 0;
@@ -2138,7 +2216,7 @@ static int add_directory(const char *dir_name, ino_t dir_inum, struct stat *st,
 out_free:
 	free(itr);
 	free(name);
-	if (existing)
+	if (existing && !tar_mode)
 		closedir(dir);
 	return -1;
 }
@@ -2175,7 +2253,12 @@ static int write_data(void)
 	struct path_htbl_element *ph_elt;
 	struct name_htbl_element *nh_elt;
 
-	if (root) {
+	if (tar_mode) {
+		memset(&root_st, 0, sizeof(root_st));
+		root_st.st_mode = mode;
+		root_st.st_mtime = time(NULL);
+		root_st.st_atime = root_st.st_ctime = root_st.st_mtime;
+	} else if (root) {
 		err = stat(root, &root_st);
 		if (err)
 			return sys_errmsg("bad root file-system directory '%s'",

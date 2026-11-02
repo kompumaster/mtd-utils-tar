@@ -69,7 +69,9 @@ endif
 mkfs_ubifs_SOURCES = \
 	$(common_SOURCES) \
 	$(libubifs_SOURCES) \
-	ubifs-utils/mkfs.ubifs/mkfs.ubifs.c
+	ubifs-utils/mkfs.ubifs/mkfs.ubifs.c \
+	ubifs-utils/mkfs.ubifs/tar_index.c \
+	ubifs-utils/mkfs.ubifs/tar_index.h
 
 mkfs_ubifs_LDADD = libmtd.a libubi.a $(ZLIB_LIBS) $(LZO_LIBS) $(ZSTD_LIBS) $(UUID_LIBS) $(LIBSELINUX_LIBS) $(OPENSSL_LIBS) \
 		   $(DUMP_STACK_LD) $(ASAN_LIBS) -lm -lpthread libmissing.a
