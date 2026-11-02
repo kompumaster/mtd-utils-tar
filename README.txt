@@ -16,9 +16,8 @@
    uid/gid;
  - tar хранит mode, uid, gid, mtime, симлинки и hardlinks;
  - для Windows-сборки не нужны Cygwin и WSL;
- - готовые образы собирает отдельный проект UbiTar
-   (https://github.com/kompumaster/UbiTar): он вызывает
-   `mkfs.ubifs_tar --tar`.
+ - отдельный проект UbiTar (https://github.com/kompumaster/UbiTar)
+   разбирает UBI в tar и собирает обратно под Windows и Linux.
 
  Что добавлено:
 
