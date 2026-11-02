@@ -68,7 +68,7 @@
  Лицензия: GPL-2.0, см. `COPYING`.
 
  Потребитель — отдельный проект UbiTar (сборка раздела из tar и
- обратно).
+ обратно): https://github.com/kompumaster/UbiTar
 
  This package provides userspace utilities for working with Linux MTD and UBI
  infrastructure, as well as related filesystems (JFFS2, UBIFS).
