@@ -15,7 +15,10 @@
    различаться только регистром, есть симлинки, setuid и разные
    uid/gid;
  - tar хранит mode, uid, gid, mtime, симлинки и hardlinks;
- - для Windows-сборки не нужны Cygwin и WSL.
+ - для Windows-сборки не нужны Cygwin и WSL;
+ - готовые образы собирает отдельный проект UbiTar
+   (https://github.com/kompumaster/UbiTar): он вызывает
+   `mkfs.ubifs_tar --tar`.
 
  Что добавлено:
 
@@ -66,9 +69,6 @@
  - Windows-бинарник требует UCRT (Windows 10 и новее).
 
  Лицензия: GPL-2.0, см. `COPYING`.
-
- Потребитель — отдельный проект UbiTar (сборка раздела из tar и
- обратно): https://github.com/kompumaster/UbiTar
 
  This package provides userspace utilities for working with Linux MTD and UBI
  infrastructure, as well as related filesystems (JFFS2, UBIFS).
