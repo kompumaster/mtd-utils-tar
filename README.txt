@@ -2,6 +2,74 @@
  mtd-utils
  =========
 
+ Форк: mkfs.ubifs с режимом --tar
+ =================================
+
+ Это форк mtd-utils 2.3.1. В утилитах добавлен один режим:
+ `mkfs.ubifs` умеет собирать образ UBIFS из tar-архива, не
+ распаковывая дерево на диск.
+
+ Зачем:
+
+ - дерево файловой системы нельзя разложить на NTFS: имена могут
+   различаться только регистром, есть симлинки, setuid и разные
+   uid/gid;
+ - tar хранит mode, uid, gid, mtime, симлинки и hardlinks;
+ - для Windows-сборки не нужны Cygwin и WSL.
+
+ Что добавлено:
+
+ - `--tar=FILE` — читать дерево из архива;
+ - `--tar-skip=PATH` — не включать путь и его потомков в образ;
+   флаг можно повторять, по умолчанию не пропускается ничего;
+ - `ubifs-utils/mkfs.ubifs/tar_index.{c,h}` — разбор ustar, GNU
+   longname и основных полей pax;
+ - `win32/compat/` — POSIX-заглушки для MinGW-w64;
+ - `win32/build-*.sh` — сборка Linux и Windows;
+ - `win32/third_party/` — архивы zlib, lzo и zstd.
+
+ Что не менялось: остальной mtd-utils, включая `ubinize`,
+ `fsck.ubifs` и библиотеки. Программа называется `mkfs.ubifs_tar`,
+ чтобы не путаться со штатной `mkfs.ubifs`.
+
+ Сборка через autotools:
+
+     ./autogen.sh
+     ./configure
+     make mkfs.ubifs
+
+ Сборка для Windows:
+
+     ./win32/build-zlib.sh
+     ./win32/build-lzo.sh
+     ./win32/build-zstd.sh
+     ./win32/build-mingw.sh
+
+ Сборка для Linux без autotools:
+
+     ./win32/build-linux.sh
+
+ Подробности — `WINDOWS.md` и `win32/README.md`.
+
+ Проверено: `--tar` с `--tar-skip` и без, обычный режим `-r`,
+ симлинки, hardlinks, каталоги и файлы; Windows-сборка запускается
+ под wine и собирает образ; на реальном `system_b` круг
+ «раздел → tar → раздел» дал 0 отличий.
+
+ Ограничения:
+
+ - `--tar` рассчитан на ustar, GNU longname и основные поля pax;
+   контрольная сумма архива не проверяется — архив считается
+   доверенным;
+ - без `--tar` на Windows mode/uid/gid неверные: NTFS их не хранит;
+ - zstd-образы читает только ядро 5.9 и новее, по умолчанию — zlib;
+ - Windows-бинарник требует UCRT (Windows 10 и новее).
+
+ Лицензия: GPL-2.0, см. `COPYING`.
+
+ Потребитель — отдельный проект UbiTar (сборка раздела из tar и
+ обратно).
+
  This package provides userspace utilities for working with Linux MTD and UBI
  infrastructure, as well as related filesystems (JFFS2, UBIFS).
 
