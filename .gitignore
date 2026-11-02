@@ -63,7 +63,7 @@ io_read
 io_update
 lsmtd
 makefiles
-mkfs.ubifs
+/mkfs.ubifs
 mkvol_bad
 mkvol_basic
 mkvol_paral
